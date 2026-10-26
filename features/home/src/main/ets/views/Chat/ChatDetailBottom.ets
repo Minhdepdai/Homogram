@@ -22,6 +22,7 @@ import { Chat } from '../../entities/Chat';
 import { Message } from '../../entities/Message';
 import { ChatDetailBottomPhotoPicker } from './ChatDetailBottomPhotoPicker';
 import { ChatDetailBottomMediaSheet } from './ChatDetailBottomMediaSheet';
+import { ReplyToPreview } from '../Message/ReplyToPreview';
 import { curves } from '@kit.ArkUI';
 import { HashMap } from '@kit.ArkTS';
 import { ChatDataSource } from '../../viewmodel/Chat/ChatDataSource';
@@ -51,10 +52,47 @@ export struct ChatDetailBottom {
   @State selectedMediaCount: number = 0;
   @State currentDetents: number = 0; // 0 means medium, 1 means full
   @State mediaSheetTitle: Resource = $r('app.string.gallery');
-  @State selectedMedias: Array<string> = [];
-  @Consume currentChatId: string;
+  @State @Watch('onSelectedMediasChanged') selectedMedias: Array<string> = [];
+  @Consume @Watch('onCurrentChatIdChanged') currentChatId: string;
   @Link replyToMessageId: number | undefined;
-  @State shouldSendMessage: boolean = false;
+  @State @Watch('onShouldSendMessageChanged') shouldSendMessage: boolean = false;
+  @State isSending: boolean = false;
+  private inFlightUris: Set<string> = new Set<string>();
+  private deselectedDuringSend: Set<string> = new Set<string>();
+  private sendEpoch: number = 0;
+
+  onShouldSendMessageChanged(): void {
+    if (this.shouldSendMessage) {
+      this.shouldSendMessage = false;
+      this.sendMessage();
+    }
+  }
+
+  onSelectedMediasChanged(): void {
+    if (!this.isSending) {
+      return;
+    }
+    this.inFlightUris.forEach((uri: string) => {
+      if (!this.selectedMedias.includes(uri)) {
+        this.deselectedDuringSend.add(uri);
+      }
+    });
+  }
+
+  private onCurrentChatIdChanged(): void {
+    this.sendEpoch++;
+    this.replyToMessageId = undefined;
+    this.text = "";
+    this.isSending = false;
+    this.clearSendTracking();
+    this.selectedMedias = [];
+    this.selectedMediaCount = 0;
+  }
+
+  private clearSendTracking(): void {
+    this.inFlightUris.clear();
+    this.deselectedDuringSend.clear();
+  }
 
   @Builder
   MediaTab() {
@@ -137,6 +175,8 @@ export struct ChatDetailBottom {
           onDisappear: () => {
             Logger.debug("MediaSheet onDisappear before unset isShowMediaSheet state: " + this.isShowMediaSheet);
             this.isShowMediaSheet = false;
+            this.clearSendTracking();
+            this.selectedMedias = [];
             this.selectedMediaCount = 0;
             Logger.debug("MediaSheet onDisappear after unset isShowMediaSheet state: " + this.isShowMediaSheet);
           },
@@ -214,39 +254,34 @@ export struct ChatDetailBottom {
 
   build() {
     Column() {
-      if (this.replyToMessageId) {
+      if (this.replyToMessageId !== undefined) {
         Row() {
-          Text($r('app.string.replying_to_message'))
-            .fontColor($r('app.color.font_color_black_two'))
-            .padding({
-              left: $r('app.float.chat_detail_bottom_padding'),
-              top: $r('app.float.chat_detail_bottom_padding'),
-              bottom: $r('app.float.chat_detail_bottom_padding'),
-            })
-          Text(this.replyToMessageId.toString())
-            .fontColor($r('app.color.font_color_black_two'))
-            .padding({
-              left: $r('app.float.chat_detail_bottom_padding'),
-              top: $r('app.float.chat_detail_bottom_padding'),
-              bottom: $r('app.float.chat_detail_bottom_padding'),
-            })
-          Blank()
+          ForEach([this.replyToMessageId], (id: number) => {
+            ReplyToPreview({ replyToMessageId: id })
+              .layoutWeight(1)
+          }, (id: number) => id.toString())
+
           Button() {
             SymbolGlyph($r('sys.symbol.xmark'))
-              .fontSize(24)
+              .fontSize(20)
               .renderingStrategy(SymbolRenderingStrategy.SINGLE)
               .fontColor([$r('sys.color.ohos_id_color_text_primary')])
           }
-            .width(32)
-            .height(32)
-            .backgroundColor(Color.Transparent)
-            .onClick(() => {
-              this.replyToMessageId = undefined;
-            })
+          .width(32)
+          .height(32)
+          .backgroundColor(Color.Transparent)
+          .margin({ left: 4 })
+          .onClick(() => {
+            this.replyToMessageId = undefined;
+          })
         }
         .width("100%")
+        .padding({
+          left: $r('app.float.chat_detail_bottom_padding'),
+          right: $r('app.float.chat_detail_bottom_padding'),
+          bottom: $r('app.float.chat_detail_bottom_padding'),
+        })
         .alignItems(VerticalAlign.Center)
-        .justifyContent(FlexAlign.SpaceBetween)
       }
       this.InputRow()
     }
@@ -261,36 +296,101 @@ export struct ChatDetailBottom {
   }
 
   sendMessage() {
-    if (this.currentChatId) {
-      // send message
-      Logger.debug("sendMessage: " + this.text + " to " + this.currentChatId);
-      Logger.debug("sendMessage Medias: " + JSON.stringify(this.selectedMedias));
-      // const pureArray: string[] = [];
-      // this.selectedMedias?.forEach(x => pureArray.push(x));
+    if (!this.currentChatId) {
+      return;
+    }
+    if (this.isSending) {
+      Logger.warn("sendMessage ignored: previous send still in flight");
+      return;
+    }
+    const chatId: string = this.currentChatId;
+    const nativeChatId: number = parseInt(chatId);
+    const textSnapshot: string = this.text;
+    const replyToId: number | undefined = this.replyToMessageId;
+    const mediaSnapshot: Array<string> = [...this.selectedMedias];
+    const epoch: number = ++this.sendEpoch;
+    let delivered: boolean = false;
+    this.isSending = true;
+    this.inFlightUris = new Set<string>(mediaSnapshot);
+    this.deselectedDuringSend = new Set<string>();
+
+    try {
       sendMessage(
-        parseInt(this.currentChatId),
-        this.text,
-        this.replyToMessageId,
-        undefined,
-        this.updateProgress
+        nativeChatId,
+        textSnapshot,
+        replyToId,
+        mediaSnapshot,
+        (index: number, progress: number) => {
+          this.updateProgress(index, progress);
+        }
       )
-        .then((message: NativeMessage[]) => {
-          Logger.debug("sendMessage success: " + message[0].text);
-          let chat = this.chatDataSource.get(this.currentChatId);
-          if (chat) {
-            this.messagesOfChatMap.get(this.currentChatId)?.push(Message.fromNative(message[0]));
-            chat.lastMessageId = message[0].messageId;
-            chat.lastMessageSenderName = message[0].senderName;
-            chat.lastMessageText = message[0].text;
-            chat.lastMessageTimestamp = message[0].timestamp;
+        .then((messages: NativeMessage[]) => {
+          delivered = true;
+          // Epoch bumps on chat switch and each send; a stale settle must not touch current state.
+          if (epoch === this.sendEpoch) {
+            this.isSending = false;
+            if (this.replyToMessageId === replyToId) {
+              this.replyToMessageId = undefined;
+            }
+            const deselected = new Set<string>(this.deselectedDuringSend);
+            this.clearSendTracking();
+            // isSending is false and tracking cleared BEFORE this assignment, so its watcher is inert.
+            // S2 semantics: !inSnapshot || deselected
+            this.selectedMedias = this.selectedMedias.filter((u: string) =>
+              !mediaSnapshot.includes(u) || deselected.has(u));
+            this.selectedMediaCount = this.selectedMedias.length;
+          }
+
+          if (!messages || messages.length === 0) {
+            Logger.error("sendMessage resolved with no messages");
+            return;
+          }
+
+          const list = this.messagesOfChatMap.get(chatId);
+          let newestIndex = -1;
+          for (let i = 0; i < messages.length; i++) {
+            const m = messages[i];
+            if (!m) {
+              continue;
+            }
+            try {
+              list?.push(Message.fromNative(m));
+              newestIndex = i;
+            } catch (e) {
+              Logger.error("sendMessage: Message.fromNative failed: " + (e as Error).message);
+            }
+          }
+
+          const chat = this.chatDataSource.get(chatId);
+          if (chat && newestIndex >= 0) {
+            const newest = messages[newestIndex];
+            chat.lastMessageId = newest.messageId;
+            chat.lastMessageSenderName = newest.senderName;
+            chat.lastMessageText = newest.text;
+            chat.lastMessageTimestamp = newest.timestamp;
             this.chatDataSource.add(chat);
           }
         })
         .catch((err: Error) => {
           Logger.error("sendMessage error: " + err.message);
+          if (epoch === this.sendEpoch) {
+            this.isSending = false;
+            this.clearSendTracking();
+            if (delivered) {
+              return;
+            }
+            if (this.text === "" && textSnapshot !== "") {
+              this.text = textSnapshot;
+            }
+          }
         });
-      this.text = "";
+    } catch (error) {
+      this.isSending = false;
+      this.clearSendTracking();
+      Logger.error("sendMessage synchronous error: " + (error as Error).message);
+      return;
     }
+    this.text = "";
   }
 
   async updateProgress(media_index: number, progress: number) {

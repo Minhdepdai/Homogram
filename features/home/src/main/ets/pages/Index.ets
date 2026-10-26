@@ -25,6 +25,7 @@ import {
 import ChatDetailNone from '../views/Chat/ChatDetailNone';
 import { ProfilePage } from './ProfilePage';
 import { ChatDetail } from './Chat/ChatDetail';
+import { MediaViewer } from './Chat/MediaViewer';
 import { ChatList } from '../views/Chat/ChatList';
 import { HomeConstants } from '../constants/HomeConstants';
 import { emitter } from '@kit.BasicServicesKit';
@@ -156,6 +157,8 @@ export struct Index {
       })
     } else if (name === 'ParticipantList') {
       ParticipantList()
+    } else if (name === 'MediaViewer') {
+      MediaViewer();
     } else if (name === 'ChatDetailNone') {
       ChatDetailNone();
     } else if (name === 'Profile' || name === 'ProfilePage') {

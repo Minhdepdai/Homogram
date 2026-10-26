@@ -8,13 +8,21 @@ import { Message } from '../../entities/Message';
 
 @Component
 export struct ReplyToPreview {
-  @Prop replyToMessageId: number;
+  @Prop @Watch('onReplyToMessageIdChange') replyToMessageId: number;
   @Consume currentChatId: string;
   @Consume messagesOfChatMap: HashMap<string, MessageDataSource>;
   @State mediaPath: string = "";
   @State isLoadingMessage: boolean = false;
   @State loadFailed: boolean = false;
   @State message: Message | undefined = this.messagesOfChatMap.get(this.currentChatId)?.getMessageById(this.replyToMessageId);
+
+  private onReplyToMessageIdChange(): void {
+    this.message = undefined;
+    this.mediaPath = "";
+    this.isLoadingMessage = false;
+    this.loadFailed = false;
+    this.checkAndLoadMessage();
+  }
 
   build() {
     Row() {
@@ -104,7 +112,8 @@ export struct ReplyToPreview {
    */
   private async checkAndLoadMessage(): Promise<void> {
     // 閲嶆柊鑾峰彇娑堟伅锛屽洜涓哄彲鑳藉湪缁勪欢鍒涘缓鍚庢暟鎹凡鏇存柊
-    this.message = this.messagesOfChatMap.get(this.currentChatId)?.getMessageById(this.replyToMessageId);
+    const loadId = this.replyToMessageId;
+    this.message = this.messagesOfChatMap.get(this.currentChatId)?.getMessageById(loadId);
     
     if (this.message) {
       Logger.debug(`ReplyToPreview: message ${this.replyToMessageId} already exists`);
@@ -127,9 +136,14 @@ export struct ReplyToPreview {
       // 浠?replyToMessageId 寰€鍓嶅姞杞?50 鏉℃秷鎭?
       const historyMessages: NativeMessage[] = await loadHistoryMessages(
         chatId,
-        this.replyToMessageId + 50, // 浠庤鍥炲娑堟伅涔嬪悗鐨勪綅缃紑濮嬪姞杞?
+        loadId + 50, // 浠庤鍥炲娑堟伅涔嬪悗鐨勪綅缃紑濮嬪姞杞?
         50
       );
+
+      if (loadId !== this.replyToMessageId) {
+        Logger.debug(`ReplyToPreview: discarding stale load for message ${loadId}`);
+        return;
+      }
 
       if (historyMessages.length > 0) {
         Logger.debug(`ReplyToPreview: loaded ${historyMessages.length} history messages`);
@@ -141,24 +155,30 @@ export struct ReplyToPreview {
           messageDataSource.append(messages);
           
           // 閲嶆柊鑾峰彇琚洖澶嶇殑娑堟伅
-          this.message = messageDataSource.getMessageById(this.replyToMessageId);
+          this.message = messageDataSource.getMessageById(loadId);
           
           if (this.message) {
-            Logger.debug(`ReplyToPreview: successfully loaded reply-to message ${this.replyToMessageId}`);
+            Logger.debug(`ReplyToPreview: successfully loaded reply-to message ${loadId}`);
           } else {
-            Logger.warn(`ReplyToPreview: reply-to message ${this.replyToMessageId} still not found after loading history`);
+            Logger.warn(`ReplyToPreview: reply-to message ${loadId} still not found after loading history`);
             this.loadFailed = true;
           }
         }
       } else {
-        Logger.warn(`ReplyToPreview: no history messages loaded for replyToMessageId ${this.replyToMessageId}`);
+        Logger.warn(`ReplyToPreview: no history messages loaded for replyToMessageId ${loadId}`);
         this.loadFailed = true;
       }
     } catch (error) {
-      Logger.error(`ReplyToPreview: failed to load history messages: ${(error as Error).message}`);
-      this.loadFailed = true;
+      if (loadId === this.replyToMessageId) {
+        Logger.error(`ReplyToPreview: failed to load history messages: ${(error as Error).message}`);
+        this.loadFailed = true;
+      } else {
+        Logger.debug(`ReplyToPreview: discarding stale load for message ${loadId}`);
+      }
     } finally {
-      this.isLoadingMessage = false;
+      if (loadId === this.replyToMessageId) {
+        this.isLoadingMessage = false;
+      }
     }
   }
 }

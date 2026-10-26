@@ -24,7 +24,7 @@ export struct ChatDetailBottomPhotoPicker {
   pickerOptions: PickerOptions = new PickerOptions();
   // 组件初始化完成后，可控制组件部分行为
   @State pickerController: PickerController = new PickerController();
-  @State selectedUris: string[] = [];
+  @Link @Watch('onSelectedMediasChanged') selectedMedias: string[];
   @State currentUri: string = '';
   @State isBlock: boolean = false; // whether to allow opening system camera
   @Link selectedMediaCount: number;
@@ -114,6 +114,20 @@ export struct ChatDetailBottomPhotoPicker {
 
     // 设置选择模式，默认：MULTI_SELECT
     this.pickerOptions.selectMode = SelectMode.MULTI_SELECT;
+
+    this.syncPreselected();
+  }
+
+  onSelectedMediasChanged(): void {
+    this.syncPreselected();
+  }
+
+  private syncPreselected(): void {
+    if (!this.pickerOptions.preselectedUris ||
+        this.pickerOptions.preselectedUris.length !== this.selectedMedias.length ||
+        this.pickerOptions.preselectedUris.some((val: string, idx: number) => val !== this.selectedMedias[idx])) {
+      this.pickerOptions.preselectedUris = [...this.selectedMedias];
+    }
   }
 
   // 进入大图页回调
@@ -142,26 +156,22 @@ export struct ChatDetailBottomPhotoPicker {
 
   // 图片/视频被选中的回调，返回的url只有只读权限，不能用url直接去打开
   private onSelect(uri: string): void {
-    if (uri) {
-      this.selectedUris.push(uri)
+    if (uri && !this.selectedMedias.includes(uri)) {
+      this.selectedMedias = [...this.selectedMedias, uri];
     }
-    // 将uri保存起来，并保证切换不同的宫格页组件时保持选中项一致
-    this.pickerOptions.preselectedUris = [...this.selectedUris];
-    this.selectedMediaCount = this.selectedUris.length;
-    console.info('onSelect' + JSON.stringify(this.selectedUris));
+    this.selectedMediaCount = this.selectedMedias.length;
+    console.info('onSelect' + JSON.stringify(this.selectedMedias));
   }
 
   // 图片/视频被取消勾选的回调，返回的url只有只读权限，不能用url直接去打开
   private onDeselect(uri: string): void {
     if (uri) {
-      this.selectedUris = this.selectedUris.filter((item: string) => {
+      this.selectedMedias = this.selectedMedias.filter((item: string) => {
         return item !== uri;
-      })
+      });
     }
-    // 排除反勾选uri，并保证切换不同的宫格页组件时保持选中项一致
-    this.pickerOptions.preselectedUris = [...this.selectedUris];
-    this.selectedMediaCount = this.selectedUris.length;
-    console.info('onDeselect' + JSON.stringify(this.selectedUris));
+    this.selectedMediaCount = this.selectedMedias.length;
+    console.info('onDeselect' + JSON.stringify(this.selectedMedias));
   }
 
   /**
@@ -188,20 +198,17 @@ export struct ChatDetailBottomPhotoPicker {
         if (this.isBlock) {
           return false;
         }
-        // 将uri保存起来，并保证切换不同的宫格页组件时保持选中项一致
-        if (uri) {
-          this.selectedUris.push(uri)
-          this.pickerOptions.preselectedUris = [...this.selectedUris];
+        if (uri && !this.selectedMedias.includes(uri)) {
+          this.selectedMedias = [...this.selectedMedias, uri];
         }
       } else { //反选
         if (uri) {
-          // 排除反勾选uri，并保证切换不同的宫格页组件时保持选中项一致
-          this.selectedUris = this.selectedUris.filter((item: string) => {
+          this.selectedMedias = this.selectedMedias.filter((item: string) => {
             return item !== uri;
-          })
-          this.pickerOptions.preselectedUris = [...this.selectedUris];
+          });
         }
       }
+      this.selectedMediaCount = this.selectedMedias.length;
     } else {
     }
     console.info('onItemClicked' + JSON.stringify(itemInfo));

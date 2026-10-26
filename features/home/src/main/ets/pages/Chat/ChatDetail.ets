@@ -39,7 +39,7 @@ export struct ChatDetail {
   @Consume chatDataSource: ChatDataSource;
   @Consume messagesOfChatMap: HashMap<string, MessageDataSource>;
   @Consume seenChatsMap: HashMap<string, SeenChat>;
-  @Consume currentChatId: string;
+  @Consume @Watch('onCurrentChatIdChanged') currentChatId: string;
   @Consume me: NativeSeenChat | undefined;
   @Consume('pageInfo') pageInfo: NavPathStack;
   @State currentChatUserName: string = '';
@@ -368,6 +368,25 @@ export struct ChatDetail {
     this.length = this.messageDataSource?.totalCount() || 0;
     // this.messages = (this.currentChatPinned ? this.pinnedChatsMap :
     // this.chatsMap).get(this.currentChatId)?.sortedMessages || [];
+  }
+
+  private onCurrentChatIdChanged(): void {
+    this.replyToMessageId = undefined;
+    let chat = this.chatDataSource.get(this.currentChatId);
+    this.chatType = chat?.chatType || ChatType.User;
+    this.isGroupOrChannel = this.chatType === ChatType.Group || this.chatType === ChatType.Channel;
+    if (chat?.name) {
+      this.currentChatUserName = chat.name;
+    } else {
+      try {
+        const seenChat = this.seenChatsMap.get(this.currentChatId);
+        this.currentChatUserName = seenChat?.fullName || seenChat?.firstName || '';
+      } catch (error) {
+        Logger.error('ChatDetail onCurrentChatIdChanged: failed to get seenChat', JSON.stringify(error));
+      }
+    }
+    this.messageDataSource = this.messagesOfChatMap.get(this.currentChatId);
+    this.length = this.messageDataSource?.totalCount() || 0;
   }
 
   aboutToDisappear(): void {

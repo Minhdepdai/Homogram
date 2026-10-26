@@ -23,6 +23,13 @@ import { filePreview } from '@kit.PreviewKit';
 import { applyEntityStyle } from './FmtEntities';
 import { LengthMetrics, LengthUnit } from '@ohos.arkui.node';
 import { Lottie, LottieController } from '@jjr/lottie_component';
+import {
+  MediaViewerParams,
+  isMediaViewerOpening,
+  setMediaViewerOpening,
+  mediaDownloadPromises,
+  withMediaDownloadTimeout
+} from '../../pages/Chat/MediaViewer';
 
 enum DefaultMediaType {
   IMAGE,
@@ -91,6 +98,7 @@ export struct MessageBubble {
     bottomStart: new LengthMetrics(HomeConstants.PATH_BORDER_RADIUS, LengthUnit.VP),
     bottomEnd: new LengthMetrics(HomeConstants.PATH_BORDER_RADIUS, LengthUnit.VP),
   };
+  private loadToken: number = 0;
   messageListScroller?: ListScroller;
   chatType: ChatType = ChatType.User;
   private content: string = "";
@@ -269,26 +277,38 @@ export struct MessageBubble {
                         .visibility(index == this.mediaPreviewIndex ? Visibility.Hidden : Visibility.Visible)
                         .onClick(() => {
                           Logger.debug("MessageBubble Media onClick: " + index);
-                          // this.mediaPreviewOptions
-                          //   .setInitIndex(index)
-                          //   .setMedias(this.mediaResources);
-                          // MediaPreview.open(this.getUIContext(), this.mediaPreviewOptions);
-                          let uiContext = getContext(this);
-                          let displayInfo: filePreview.DisplayInfo = {
-                            x: 100,
-                            y: 100,
-                            width: 800,
-                            height: 800
-                          };
-                          let fileInfo: filePreview.PreviewInfo = {
-                            uri: "file://" + uiContext.applicationInfo.name + this.mediaPath,
-                            mimeType: 'image/jpeg'
-                          };
-                          filePreview.openPreview(uiContext, fileInfo, displayInfo).then(() => {
-                            console.info('Succeeded in opening preview');
-                          }).catch((err: BusinessError) => {
-                            console.error(`Failed to open preview, err.code = ${err.code}, err.message = ${err.message}`);
-                          });
+                          const chatId = this.message?.chatId;
+                          const messageId = this.message?.messageId;
+                          if (!chatId || !messageId || messageId <= 0 || isMediaViewerOpening) {
+                            return;
+                          }
+                          this.mediaPath = BaseConstants.BASE_DIR + chatId.toString() + "/" + messageId.toString() + ".jpg";
+                          let exists = false;
+                          try {
+                            exists = fs.accessSync(this.mediaPath);
+                          } catch (e) {
+                            exists = false;
+                          }
+                          if (!exists) {
+                            this.loadMedia();
+                          }
+                          setMediaViewerOpening(true);
+                          const beforeSize = this.pageInfo.size();
+                          try {
+                            this.pageInfo.pushPath({
+                              name: 'MediaViewer',
+                              param: new MediaViewerParams(chatId.toString(), messageId)
+                            });
+                          } catch (error) {
+                            setMediaViewerOpening(false);
+                            Logger.error("MessageBubble push MediaViewer error: " + error);
+                          }
+                          setTimeout(() => {
+                            if (this.pageInfo.size() <= beforeSize) {
+                              setMediaViewerOpening(false);
+                              Logger.warn('viewer push did not navigate, recovered mediaViewerOpening');
+                            }
+                          }, 400);
                         })
                     }, (item: DefaultMediaModel, index: number) => JSON.stringify(item) + index)
                   }
@@ -727,6 +747,7 @@ export struct MessageBubble {
   }
 
   async loadMedia(): Promise<void> {
+    let loadToken = ++this.loadToken;
     this.mediaLoaded = false;
     this.mediaLoadFailed = false;
 
@@ -828,7 +849,27 @@ export struct MessageBubble {
             throw new Error('MessageBubble media download requires chatId and messageId');
           }
           Logger.info(`[MEDIA] Downloading media: chatId=${chatId}, messageId=${messageId}`);
-          const path = await downloadMediaFromMessage(chatId, messageId);
+
+          let downloadPromise: Promise<string> | undefined = mediaDownloadPromises.get(this.mediaPath);
+          let path: string;
+          if (downloadPromise) {
+            path = await withMediaDownloadTimeout(downloadPromise, this.mediaPath);
+          } else {
+            const rawPromise = downloadMediaFromMessage(chatId, messageId);
+            const timedPromise = withMediaDownloadTimeout(rawPromise, this.mediaPath);
+            mediaDownloadPromises.set(this.mediaPath, timedPromise);
+            try {
+              path = await timedPromise;
+            } finally {
+              if (mediaDownloadPromises.hasKey(this.mediaPath) && mediaDownloadPromises.get(this.mediaPath) === timedPromise) {
+                mediaDownloadPromises.remove(this.mediaPath);
+              }
+            }
+          }
+
+          if (loadToken !== this.loadToken) {
+            return;
+          }
           this.mediaPath = path;
           // 验证文件是否存在
           if (fs.accessSync(path)) {
@@ -844,6 +885,9 @@ export struct MessageBubble {
             this.mediaLoaded = true;
           }
         } catch (error) {
+          if (loadToken !== this.loadToken) {
+            return;
+          }
           Logger.error(`[MEDIA] Download failed: ${error}`);
           this.mediaLoadFailed = true;
           throw new Error(`Download failed: ${error}`); // 抛出 Error 对象
